@@ -1,0 +1,45 @@
+server:
+  address: 0.0.0.0
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: andpad-backend
+  main:
+    cloud-platform: NONE
+  datasource:
+    # DATABASE_URL は DataSourceConfig が環境変数から解決（Railway postgresql:// 対応）
+    url: jdbc:postgresql://localhost:5434/andpad
+    username: ${DB_USER:andpad}
+    password: ${DB_PASSWORD:andpad}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      connection-timeout: 30000
+      initialization-fail-timeout: 60000
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  graphql:
+    path: /graphql
+    graphiql:
+      enabled: true
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-change-in-production-min-32-chars}
+    ttl-hours: 72
+  openai:
+    api-key: ${OPENAI_API_KEY:}
+    model: ${OPENAI_MODEL:gpt-4o-mini}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true

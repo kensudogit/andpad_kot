@@ -1,0 +1,26 @@
+package jp.andpad.api.domain
+
+data class BudgetDashboard(
+    val projectId: String,
+    val projectName: String,
+    val contractAmount: Double,
+    val totalEstimate: Double,
+    val totalBudget: Double,
+    val totalCommitted: Double,
+    val totalActual: Double,
+    val totalForecast: Double,
+    val varianceAmount: Double,
+    val variancePct: Double,
+    val completionPct: Double,
+    val estimateBudgetTotal: Double,
+    val grossMarginPct: Double,
+    val inquiryProfitTotal: Double,
+    val billingTotal: Double,
+    val billingBalance: Double,
+    val monthlyCosts: List<MonthlyCostMetric>,
+    val reconciliation: List<BillingReconciliationItem>,
+    val lineItems: List<BudgetLineItem>,
+    val recentCosts: List<CostEntry>,
+    val categorySummary: List<BudgetCategorySummary>,
+    val generatedAt: String,
+)
