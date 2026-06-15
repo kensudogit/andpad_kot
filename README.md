@@ -102,6 +102,8 @@ railway up
 | `JWT_SECRET` | 32文字以上のランダム文字列 |
 | `OPENAI_API_KEY` | AI チャットボット用（任意） |
 
+**本番 URL:** https://andpadkot-production.up.railway.app
+
 `API_URL` は **設定しない**（コンテナ内 `127.0.0.1:8081` へプロキシ）。
 
 ### GitHub 連携
