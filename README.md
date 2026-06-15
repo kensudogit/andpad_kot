@@ -78,6 +78,41 @@ cd backend
 
 `railway.toml` / `Dockerfile.unified` を利用（`build.gradle.kts` 対応済み）。
 
+### 初回セットアップ（CLI）
+
+```powershell
+cd C:\devlop\andpad_kot
+.\scripts\setup-railway.ps1
+```
+
+または手動:
+
+```powershell
+railway link -p discerning-transformation -e production
+railway add --service andpad_kot
+railway link -p discerning-transformation -e production -s andpad_kot
+railway up
+```
+
+**Variables（`andpad_kot` サービス）**
+
+| 変数 | 内容 |
+|------|------|
+| `DATABASE_URL` | Postgres プラグインから Reference |
+| `JWT_SECRET` | 32文字以上のランダム文字列 |
+| `OPENAI_API_KEY` | AI チャットボット用（任意） |
+
+`API_URL` は **設定しない**（コンテナ内 `127.0.0.1:8081` へプロキシ）。
+
+### GitHub 連携
+
+```powershell
+git remote add origin https://github.com/kensudogit/andpad_kot.git
+git push -u origin main
+```
+
+GitHub で `andpad_kot` リポジトリを作成してから push してください。
+
 ## ライセンス
 
 社内デモ用途（`andpad_j` と同様）
