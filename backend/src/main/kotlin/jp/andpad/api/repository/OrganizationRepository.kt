@@ -18,13 +18,30 @@ import org.springframework.dao.EmptyResultDataAccessException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 
+/**
+ * 組織・チーム・利用状況の JDBC リポジトリ。
+ *
+ * **責務**: organizations マスタ取得／更新、team_members 一覧、usage_counters 集計。
+ *
+ * **参照テーブル**: [organizations], [team_members], [users], [construction_projects], [usage_counters]
+ *
+ * **テナント分離**: org_id を主キーとして organizations / team_members / usage_counters をスコープ。
+ * getOrganization は id = orgId のみ（呼び出し元が TenantContext から orgId を渡す前提）。
+ */
 @Repository
 class OrganizationRepository(
     private val jdbc: JdbcTemplate,
 ) {
 
+    /**
+     * 組織情報を取得（メンバー数・有効モジュールは引数で付与）。
+     *
+     * @param orgId テナント ID
+     * @param enabledModules サービス層で取得済みのモジュール一覧
+     */
     fun getOrganization(orgId: String, enabledModules: List<SaasModule>): Organization {
         val row = jdbc.queryForMap(
+            // organizations マスタ 1 件
             """
             SELECT id, name, slug, plan_tier, subscription_status, seat_count, timezone, created_at
             FROM organizations WHERE id = ?
@@ -39,6 +56,11 @@ class OrganizationRepository(
         return mapOrganization(row, memberCount, enabledModules)
     }
 
+    /**
+     * 組織属性を部分更新（patch に含まれるキーのみ上書き）。
+     *
+     * @param patch name / slug / seatCount / timezone のいずれか
+     */
     fun updateOrganization(
         orgId: String,
         patch: Map<String, Any>,
@@ -60,6 +82,7 @@ class OrganizationRepository(
         return getOrganization(orgId, enabledModules)
     }
 
+    /** 組織メンバー一覧（users JOIN、org_id スコープ）。 */
     fun listTeamMembers(orgId: String): List<TeamMember> {
         return jdbc.query(
             """
@@ -88,6 +111,12 @@ class OrganizationRepository(
         )
     }
 
+    /**
+     * 利用状況サマリ（メンバー数・プロジェクト数・月次 API/相談トークン）。
+     *
+     * usage_counters 行不存在時は apiCalls / consultTokens = 0。
+     * 上限値（10, 50, 10000）は固定ハードコード。
+     */
     fun usageSummary(orgId: String): UsageSummary {
         val members = jdbc.queryForObject(
             "SELECT COUNT(*) FROM team_members WHERE org_id = ?",
@@ -117,6 +146,7 @@ class OrganizationRepository(
         return UsageSummary(members, 10, projects, 50, apiCalls, 10000, consultTokens)
     }
 
+    /** 組織 ID の存在確認（EXISTS サブクエリ）。 */
     fun orgExists(orgId: String): Boolean {
         val exists = jdbc.queryForObject(
             "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ?)",
@@ -126,6 +156,7 @@ class OrganizationRepository(
         return exists == true
     }
 
+    /** Map 行を [Organization] ドメインに変換。 */
     private fun mapOrganization(
         row: Map<String, Any?>,
         memberCount: Int,
@@ -149,6 +180,7 @@ class OrganizationRepository(
         )
     }
 
+    /** Timestamp を ISO 形式文字列に変換。 */
     private fun formatTimestamp(ts: Timestamp?): String {
         return if (ts == null) Dates.formatRequired(Dates.now()) else Dates.formatRequired(ts.toInstant())
     }

@@ -1,5 +1,20 @@
 package jp.andpad.api.domain
 
+/**
+ * SaaS 契約プランのティア（段階）を表す列挙型。
+ *
+ * 組織が契約する ANDPAD プランに応じて、利用可能な機能・上限値が決定する。
+ */
 enum class PlanTier {
-    FREE, STARTER, PRO, ENTERPRISE
+    /** 無料プラン：基本機能のみ、利用上限が最小 */
+    FREE,
+
+    /** スタータープラン：小規模現場向けの入門プラン */
+    STARTER,
+
+    /** プロプラン：中規模以上の現場向け。主要モジュールをフル活用 */
+    PRO,
+
+    /** エンタープライズプラン：大規模組織向け。カスタム連携・専任サポート */
+    ENTERPRISE
 }

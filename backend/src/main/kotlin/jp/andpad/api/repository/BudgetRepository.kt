@@ -28,13 +28,34 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * プロジェクト予算・原価管理の JDBC リポジトリ。
+ *
+ * **責務**: 実行予算／見積の CRUD、明細行・原価エントリ管理、ダッシュボード集計、
+ * 請求モジュール連携による原価自動起票。
+ *
+ * **参照テーブル**: [project_budgets], [budget_line_items], [cost_entries],
+ * [construction_projects], [project_module_records]
+ *
+ * **テナント分離**: 全クエリ・更新で `org_id = ?` を必須条件とする。
+ * プロジェクト参照時は construction_projects 側でも org_id を照合する。
+ */
 @Repository
 class BudgetRepository(
     private val jdbc: JdbcTemplate,
 ) {
 
+    /**
+     * 組織内の予算一覧を取得する（プロジェクト名 JOIN、作成日降順）。
+     *
+     * @param orgId テナント ID
+     * @param projectId 省略可。指定時は当該プロジェクトに絞り込み
+     * @param budgetType 省略可。EXECUTION_BUDGET / ESTIMATE 等で絞り込み
+     * @return 明細合計を付与した [ProjectBudget] リスト
+     */
     fun listBudgets(orgId: String, projectId: String?, budgetType: BudgetType?): List<ProjectBudget> {
         val sql = StringBuilder(
+            // project_budgets を construction_projects と JOIN、org_id でスコープ
             """
             SELECT b.id, b.project_id, p.name AS project_name, b.name, b.budget_type, b.status,
                    b.version_no, b.contract_amount, b.notes, b.approved_at, b.created_at
@@ -62,8 +83,16 @@ class BudgetRepository(
         return budgets.map { fillTotals(orgId, it) }
     }
 
+    /**
+     * 指定予算の明細行一覧（sort_order 昇順）。
+     *
+     * @param orgId テナント ID
+     * @param budgetId 予算 ID
+     * @return 差異率を計算済みの [BudgetLineItem] リスト
+     */
     fun listLineItems(orgId: String, budgetId: String): List<BudgetLineItem> {
         return jdbc.query(
+            // budget_line_items を org_id + budget_id で取得
             """
             SELECT id, budget_id, category_code, category_name, wbs_code, description,
                    estimate_amount, budget_amount, committed_amount, actual_amount, sort_order, created_at
@@ -77,6 +106,14 @@ class BudgetRepository(
         )
     }
 
+    /**
+     * 原価エントリ一覧。projectId 必須（未指定時は空リスト）。
+     *
+     * @param orgId テナント ID
+     * @param projectId 工事プロジェクト ID（必須）
+     * @param lineItemId 省略可。明細行 ID で絞り込み
+     * @return エントリ日降順の [CostEntry] リスト
+     */
     fun listCostEntries(orgId: String, projectId: String?, lineItemId: String?): List<CostEntry> {
         if (projectId.isNullOrBlank()) {
             return emptyList()
@@ -104,8 +141,19 @@ class BudgetRepository(
         return jdbc.query(sql.toString(), { rs, _ -> mapCostEntry(rs) }, *args.toTypedArray())
     }
 
+    /**
+     * プロジェクト単位の予算ダッシュボードを集計する。
+     *
+     * 最新 EXECUTION_BUDGET を基に明細集計・カテゴリ別サマリ・月次原価・請求突合を構築。
+     * 実行予算が存在しない場合はゼロ値の空ダッシュボードを返す。
+     *
+     * @param orgId テナント ID
+     * @param projectId 工事プロジェクト ID
+     * @return [BudgetDashboard]（プロジェクト不存在時は例外）
+     */
     fun budgetDashboard(orgId: String, projectId: String): BudgetDashboard {
         val projectName = jdbc.queryForObject(
+            // プロジェクト名取得（org_id 照合）
             "SELECT name FROM construction_projects WHERE id = ? AND org_id = ?",
             String::class.java,
             projectId,
@@ -113,6 +161,7 @@ class BudgetRepository(
         )!!
         val empty = emptyDashboard(projectId, projectName)
         return try {
+            // 最新版 EXECUTION_BUDGET を 1 件取得
             val row = jdbc.queryForMap(
                 """
                 SELECT id, contract_amount FROM project_budgets
@@ -194,8 +243,15 @@ class BudgetRepository(
         }
     }
 
+    /**
+     * 組織内全プロジェクトの予算サマリ（承認済み EXECUTION_BUDGET ベース）。
+     *
+     * @param orgId テナント ID
+     * @return 請求合計（BILLING モジュール）を付与した [ProjectBudgetSummary] リスト
+     */
     fun listBudgetSummaries(orgId: String): List<ProjectBudgetSummary> {
         val summaries = jdbc.query(
+            // プロジェクト単位で予算・実績を LEFT JOIN 集計
             """
             SELECT p.id, p.name, p.status,
                    COALESCE(MAX(b.contract_amount), 0) AS contract_amount,
@@ -240,6 +296,14 @@ class BudgetRepository(
         }
     }
 
+    /**
+     * 新規予算ヘッダを INSERT する。
+     *
+     * budgetType 未指定時 EXECUTION_BUDGET、status 未指定時 DRAFT、versionNo ≤ 0 時は 1。
+     *
+     * @return 明細合計 0 の [ProjectBudget]
+     * @throws EmptyResultDataAccessException プロジェクトが org_id 不一致または不存在
+     */
     @Transactional
     fun createBudget(
         orgId: String,
@@ -296,6 +360,11 @@ class BudgetRepository(
         )
     }
 
+    /**
+     * 予算明細行を INSERT する。
+     *
+     * @return 差異・差異率を計算済みの [BudgetLineItem]
+     */
     @Transactional
     fun createLineItem(
         orgId: String,
@@ -348,6 +417,12 @@ class BudgetRepository(
         )
     }
 
+    /**
+     * 原価エントリを INSERT し、lineItemId 指定時は明細の actual_amount を加算更新する。
+     *
+     * @param lineItemId 省略可。空文字は NULLIF で DB NULL 化
+     * @return 作成した [CostEntry]
+     */
     @Transactional
     fun createCostEntry(
         orgId: String,
@@ -389,6 +464,7 @@ class BudgetRepository(
             recordedBy ?: "",
         )
         if (!lineItemId.isNullOrBlank()) {
+            // 紐づく明細行の実績原価を加算（org_id スコープ）
             jdbc.update(
                 "UPDATE budget_line_items SET actual_amount = actual_amount + ? WHERE id = ? AND org_id = ?",
                 amount,
@@ -424,9 +500,15 @@ class BudgetRepository(
         )
     }
 
+    /**
+     * 予算を APPROVED に更新し approved_at を NOW() 設定する。
+     *
+     * @return 明細合計付きの更新後 [ProjectBudget]
+     */
     @Transactional
     fun approveBudget(orgId: String, id: String): ProjectBudget {
         jdbc.update(
+            // status 承認＋承認日時更新（org_id スコープ）
             "UPDATE project_budgets SET status = 'APPROVED', approved_at = NOW() WHERE id = ? AND org_id = ?",
             id,
             orgId,
@@ -445,9 +527,16 @@ class BudgetRepository(
         return fillTotals(orgId, mapBudgetFromMap(budget))
     }
 
+    /**
+     * BILLING モジュールレコードから原価エントリを自動生成する。
+     *
+     * @param billingRecordId project_module_records の ID（module_code = BILLING）
+     * @return [createCostEntry] 経由で作成された [CostEntry]
+     */
     @Transactional
     fun createCostFromBilling(orgId: String, billingRecordId: String, projectId: String): CostEntry {
         val row = jdbc.queryForMap(
+            // 請求レコード取得（org_id + project_id + BILLING で検証）
             """
             SELECT title, detail, COALESCE(amount, 0) AS amount, record_date
             FROM project_module_records
@@ -479,8 +568,10 @@ class BudgetRepository(
         )
     }
 
+    /** 明細行 SUM から予算ヘッダに合計フィールドを付与する。 */
     private fun fillTotals(orgId: String, budget: ProjectBudget): ProjectBudget {
         val totals = jdbc.queryForMap(
+            // budget_id + org_id で見積・予算・確定・実績を集計
             """
             SELECT COALESCE(SUM(estimate_amount), 0) AS total_estimate,
                    COALESCE(SUM(budget_amount), 0) AS total_budget,
@@ -510,6 +601,7 @@ class BudgetRepository(
         )
     }
 
+    /** ResultSet から [ProjectBudget] をマッピング（合計は 0 初期値）。 */
     private fun mapBudget(rs: java.sql.ResultSet): ProjectBudget {
         return ProjectBudget(
             rs.requireStr("id"),
@@ -530,6 +622,7 @@ class BudgetRepository(
         )
     }
 
+    /** queryForMap 結果から [ProjectBudget] をマッピング。 */
     private fun mapBudgetFromMap(row: Map<String, Any?>): ProjectBudget {
         val approved = when (val approvedAt = row["approved_at"]) {
             is Timestamp -> approvedAt.toInstant()
@@ -558,6 +651,7 @@ class BudgetRepository(
         )
     }
 
+    /** ResultSet から [BudgetLineItem] をマッピングし差異を計算。 */
     private fun mapLineItem(rs: java.sql.ResultSet): BudgetLineItem {
         return mapLineItemVariance(
             BudgetLineItem(
@@ -579,6 +673,7 @@ class BudgetRepository(
         )
     }
 
+    /** 予算対実績の差異・差異率を算出して明細行を再構築。 */
     private fun mapLineItemVariance(item: BudgetLineItem): BudgetLineItem {
         val variance = item.budgetAmount - item.actualAmount
         val variancePct = if (item.budgetAmount > 0) variance / item.budgetAmount * 100 else 0.0
@@ -600,6 +695,7 @@ class BudgetRepository(
         )
     }
 
+    /** ResultSet から [CostEntry] をマッピング。 */
     private fun mapCostEntry(rs: java.sql.ResultSet): CostEntry {
         return CostEntry(
             rs.requireStr("id"),
@@ -618,9 +714,11 @@ class BudgetRepository(
         )
     }
 
+    /** 最新 ESTIMATE 予算の明細 budget_amount 合計。不存在時 0.0。 */
     private fun queryEstimateTotal(orgId: String, projectId: String): Double {
         return try {
             jdbc.queryForObject(
+                // 最新見積予算の明細合計
                 """
                 SELECT COALESCE(SUM(bli.budget_amount), 0) FROM budget_line_items bli
                 WHERE bli.org_id = ? AND bli.budget_id = (
@@ -639,6 +737,7 @@ class BudgetRepository(
         }
     }
 
+    /** project_module_records の amount 合計（モジュールコード指定）。 */
     private fun sumModuleAmount(orgId: String, projectId: String, moduleCode: String): Double {
         return try {
             jdbc.queryForObject(
@@ -656,6 +755,7 @@ class BudgetRepository(
         }
     }
 
+    /** 指定期間の月次原価を cost_entries から集計（欠損月は 0 埋め）。 */
     private fun monthlyCosts(orgId: String, projectId: String, months: Int): List<MonthlyCostMetric> {
         val since = LocalDate.now().minusMonths((months - 1).toLong()).withDayOfMonth(1)
         val byMonth = HashMap<String, Double>()
@@ -683,9 +783,11 @@ class BudgetRepository(
         return out
     }
 
+    /** 請求レコードと月次原価を突合し MATCHED/UNDER/OVER 等のステータスを付与。 */
     private fun billingReconciliation(orgId: String, projectId: String): List<BillingReconciliationItem> {
         val costByMonth = HashMap<String, Double>()
         jdbc.query(
+            // 月別原価合計
             """
             SELECT to_char(date_trunc('month', entry_date), 'YYYY-MM') AS month,
                    COALESCE(SUM(amount), 0) AS amount
@@ -701,6 +803,7 @@ class BudgetRepository(
             projectId,
         )
         return jdbc.query(
+            // BILLING モジュールレコード一覧
             """
             SELECT id, title, COALESCE(amount, 0) AS amount, record_date
             FROM project_module_records
@@ -740,6 +843,7 @@ class BudgetRepository(
         )
     }
 
+    /** 実行予算未存在時に返すゼロ値ダッシュボード。 */
     private fun emptyDashboard(projectId: String, projectName: String): BudgetDashboard {
         return BudgetDashboard(
             projectId,
@@ -767,10 +871,12 @@ class BudgetRepository(
         )
     }
 
+    /** Timestamp を ISO 形式文字列に変換（null 時は現在時刻）。 */
     private fun formatTimestamp(ts: Timestamp?): String {
         return if (ts == null) Dates.formatRequired(Dates.now()) else Dates.formatRequired(ts.toInstant())
     }
 
+    /** java.sql.Date を yyyy-MM-dd 文字列に変換。 */
     private fun formatDate(date: Date?): String? {
         return date?.toLocalDate()?.toString()
     }

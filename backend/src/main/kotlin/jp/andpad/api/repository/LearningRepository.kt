@@ -22,11 +22,23 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * ラーニングコンテンツ（動画・講師・パス）の JDBC リポジトリ。
+ *
+ * **責務**: 動画カタログ、講師、学習パス、視聴進捗 UPSERT、ダッシュボード集計。
+ *
+ * **参照テーブル**: [videos], [instructors], [learning_paths], [path_videos],
+ * [quizzes], [watch_progress]
+ *
+ * **テナント分離**: 全テーブルで `org_id = ?` を必須とする。
+ * path_videos は path_id 経由（learning_paths が org スコープ）。
+ */
 @Repository
 class LearningRepository(
     private val jdbc: JdbcTemplate,
 ) {
 
+    /** 組織のラーニングダッシュボード統計（動画数・完了数・視聴時間等）。 */
     fun dashboard(orgId: String): DashboardStats {
         val videosTotal = queryInt("SELECT COUNT(*) FROM videos WHERE org_id = ?", orgId)
         val pathsTotal = queryInt("SELECT COUNT(*) FROM learning_paths WHERE org_id = ?", orgId)
@@ -48,6 +60,12 @@ class LearningRepository(
         return DashboardStats(videosTotal, pathsTotal, quizzesTotal, completions, watchHours, activeLearners)
     }
 
+    /**
+     * 動画一覧をページネーション取得（カテゴリ・難易度・キーワード絞り込み可）。
+     *
+     * @param page 1 未満は 1 に補正
+     * @param pageSize 1 未満は 12 に補正
+     */
     fun paginateVideos(
         orgId: String,
         category: VideoCategory?,
@@ -98,6 +116,7 @@ class LearningRepository(
         return VideoPage(items, PageInfo(total, p, size, totalPages))
     }
 
+    /** 動画 1 件取得。不存在時 null。 */
     fun getVideo(orgId: String, id: String): Video? {
         return try {
             jdbc.queryForObject(
@@ -118,6 +137,7 @@ class LearningRepository(
         }
     }
 
+    /** おすすめ動画（featured = TRUE、視聴数降順、最大 12 件）。 */
     fun featuredVideos(orgId: String): List<Video> {
         return jdbc.query(
             """
@@ -134,6 +154,11 @@ class LearningRepository(
         )
     }
 
+    /**
+     * 視聴回数を +1 更新。
+     *
+     * @return 更新成功時の [Video]。0 件更新時 null
+     */
     @Transactional
     fun incrementViewCount(orgId: String, id: String): Video? {
         val updated = jdbc.update(
@@ -147,6 +172,7 @@ class LearningRepository(
         return getVideo(orgId, id)
     }
 
+    /** 講師一覧（担当動画数サブクエリ付き）。 */
     fun listInstructors(orgId: String): List<Instructor> {
         return jdbc.query(
             """
@@ -170,6 +196,7 @@ class LearningRepository(
         )
     }
 
+    /** 講師 1 件取得。不存在時 null。 */
     fun getInstructor(orgId: String, id: String): Instructor? {
         return try {
             jdbc.queryForObject(
@@ -198,6 +225,7 @@ class LearningRepository(
         }
     }
 
+    /** 学習パス一覧（カテゴリ・難易度フィルタ可、動画 ID リスト付き）。 */
     fun listPaths(orgId: String, category: VideoCategory?, skillLevel: SkillLevel?): List<LearningPath> {
         val sql = StringBuilder(
             """
@@ -222,6 +250,7 @@ class LearningRepository(
         )
     }
 
+    /** 学習パス 1 件取得。不存在時 null。 */
     fun getPath(orgId: String, id: String): LearningPath? {
         return try {
             jdbc.queryForObject(
@@ -238,6 +267,11 @@ class LearningRepository(
         }
     }
 
+    /**
+     * 視聴進捗を UPSERT（org_id + video_id + learner_id で一意）。
+     *
+     * id 空文字時は新規 ID 生成。
+     */
     @Transactional
     fun updateProgress(orgId: String, progress: WatchProgress): WatchProgress {
         val id = if (progress.id.isBlank()) Ids.random("wp_") else progress.id
@@ -269,6 +303,7 @@ class LearningRepository(
         )
     }
 
+    /** 学習パスに紐づく動画 ID 一覧（sort_order 昇順）。 */
     private fun pathVideoIds(pathId: String): List<String> {
         return jdbc.query(
             "SELECT video_id FROM path_videos WHERE path_id = ? ORDER BY sort_order",
@@ -277,6 +312,7 @@ class LearningRepository(
         )
     }
 
+    /** ResultSet + 動画 ID リストから [LearningPath] を構築。 */
     private fun mapPath(rs: java.sql.ResultSet, videoIds: List<String>): LearningPath {
         return LearningPath(
             rs.requireStr("id"),
@@ -291,6 +327,7 @@ class LearningRepository(
         )
     }
 
+    /** ResultSet から [Video] をマッピング（tags は PostgreSQL 配列）。 */
     private fun mapVideo(rs: java.sql.ResultSet): Video {
         val published = rs.getTimestamp("published_at")
         return Video(
@@ -312,6 +349,7 @@ class LearningRepository(
         )
     }
 
+    /** 単一値 Int クエリ（null 時 0）。 */
     private fun queryInt(sql: String, vararg args: Any): Int {
         val value = jdbc.queryForObject(sql, Int::class.java, *args)
         return value ?: 0

@@ -20,14 +20,28 @@ import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * 認証・ユーザー登録に関する JDBC リポジトリ。
+ *
+ * **責務**: メールアドレスによるユーザー検索、ログイン検証、新規組織＋オーナー登録、
+ * JWT セッション復元用のユーザー／組織情報取得。
+ *
+ * **参照テーブル**: [users], [organizations], [team_members], [usage_counters], [org_modules], [saas_modules]
+ *
+ * **テナント分離**: ログイン・セッション復元時は [team_members] 経由で org_id を解決。
+ * ユーザー検索（[findUserByEmail]）は org_id 非依存（メールはグローバル一意想定）。
+ * 登録時は新規 org_id を生成し、関連行を同一トランザクションで INSERT する。
+ */
 @Repository
 class AuthRepository(
     private val jdbc: JdbcTemplate,
     private val passwordEncoder: PasswordEncoder,
 ) {
 
+    /** ログイン成功時のユーザー・組織・ロールセット。 */
     data class LoginResult(val user: User, val organization: Organization, val role: MemberRole)
 
+    /** 新規組織登録入力（クリニック名・slug・オーナー情報）。 */
     data class RegisterInput(
         val clinicName: String,
         val slug: String,
@@ -36,11 +50,18 @@ class AuthRepository(
         val password: String,
     )
 
+    /**
+     * メールアドレス（大文字小文字無視）でユーザーを 1 件検索する。
+     *
+     * @param email 検索対象メールアドレス（前後空白は trim、小文字正規化）
+     * @return 該当ユーザー。存在しない場合は [Optional.empty]
+     */
     fun findUserByEmail(email: String): Optional<User> {
         val normalized = email.lowercase(Locale.ROOT).trim()
         return try {
             Optional.of(
                 jdbc.queryForObject(
+                    // users テーブルからプロフィール情報を取得（パスワードハッシュは含めない）
                     """
                     SELECT id, email, name, COALESCE(avatar_url, '') AS avatar_url
                     FROM users WHERE LOWER(email) = ?
@@ -61,9 +82,17 @@ class AuthRepository(
         }
     }
 
+    /**
+     * メール＋平文パスワードでログインし、所属組織（最古参加）とロールを返す。
+     *
+     * @param email ログインメール
+     * @param password 平文パスワード（[PasswordEncoder] でハッシュ照合）
+     * @return 成功時 [LoginResult]。ユーザー不在・パスワード不一致・組織未所属時は [Optional.empty]
+     */
     fun login(email: String, password: String): Optional<LoginResult> {
         val normalized = email.lowercase(Locale.ROOT).trim()
         return try {
+            // ユーザー取得（パスワード検証用に password_hash を含む）
             val row = jdbc.queryForMap(
                 """
                 SELECT id, email, name, COALESCE(avatar_url, '') AS avatar_url, password_hash
@@ -80,6 +109,7 @@ class AuthRepository(
                 row["name"] as String,
                 emptyToNull(row["avatar_url"] as String) ?: "",
             )
+            // 参加日時が最も古い組織をデフォルトテナントとして選択
             val orgRow = jdbc.queryForMap(
                 """
                 SELECT o.id, o.name, o.slug, o.plan_tier, o.subscription_status, o.seat_count,
@@ -92,6 +122,7 @@ class AuthRepository(
                 """.trimIndent(),
                 user.id,
             )
+            // 最終アクティブ日時を更新（org_id でテナントスコープ）
             jdbc.update(
                 "UPDATE team_members SET last_active_at = NOW() WHERE user_id = ? AND org_id = ?",
                 user.id,
@@ -105,6 +136,15 @@ class AuthRepository(
         }
     }
 
+    /**
+     * 新規組織・オーナーユーザー・初期データを一括登録する。
+     *
+     * slug 未指定時は `clinic-{timestamp}` を自動生成。プランは STARTER / TRIALING、席数 5。
+     * 全 SaaS モジュールを org_modules に有効化して INSERT する。
+     *
+     * @param input クリニック名・slug・オーナー情報
+     * @return 登録直後の [LoginResult]（ロール OWNER）
+     */
     @Transactional
     fun register(input: RegisterInput): LoginResult {
         val email = input.email.lowercase(Locale.ROOT).trim()
@@ -118,6 +158,7 @@ class AuthRepository(
         val userId = Ids.random("user_")
         val tmId = Ids.random("tm_")
         val now = Dates.now()
+        // 組織マスタ INSERT
         jdbc.update(
             """
             INSERT INTO organizations (id, name, slug, plan_tier, subscription_status, seat_count)
@@ -141,6 +182,7 @@ class AuthRepository(
             userId,
         )
         jdbc.update("INSERT INTO usage_counters (org_id) VALUES (?)", orgId)
+        // 全 saas_modules を org_id 単位で有効化
         jdbc.update(
             """
             INSERT INTO org_modules (org_id, module_code, enabled)
@@ -164,6 +206,13 @@ class AuthRepository(
         return LoginResult(user, org, MemberRole.OWNER)
     }
 
+    /**
+     * JWT 等から復元した userId / orgId でセッション情報を再構築する。
+     *
+     * @param userId ユーザー ID
+     * @param orgId テナント組織 ID（team_members で所属確認）
+     * @return ユーザー・組織・ロール。所属不一致または不存在時は [Optional.empty]
+     */
     fun sessionByUser(userId: String, orgId: String): Optional<LoginResult> {
         return try {
             val user = jdbc.queryForObject(
@@ -181,6 +230,7 @@ class AuthRepository(
                 },
                 userId,
             )!!
+            // org_id + user_id の両方で team_members 所属を検証
             val orgRow = jdbc.queryForMap(
                 """
                 SELECT o.id, o.name, o.slug, o.plan_tier, o.subscription_status, o.seat_count,
@@ -193,6 +243,7 @@ class AuthRepository(
                 userId,
             )
             val role = MemberRole.valueOf(orgRow["role"] as String)
+            // 組織メンバー数集計（org_id スコープ）
             val memberCount = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM team_members WHERE org_id = ?",
                 Int::class.java,
@@ -205,6 +256,7 @@ class AuthRepository(
         }
     }
 
+    /** ResultSet 行 Map を [Organization] ドメインに変換する。 */
     private fun mapOrganization(row: Map<String, Any?>, memberCount: Int): Organization {
         val createdAt = when (val created = row["created_at"]) {
             is Timestamp -> created.toInstant()

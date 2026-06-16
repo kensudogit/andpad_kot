@@ -16,13 +16,29 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * 工事プロジェクト・SaaS モジュールレコードの JDBC リポジトリ。
+ *
+ * **責務**: construction_projects の一覧／作成、project_module_records の CRUD。
+ *
+ * **参照テーブル**: [construction_projects], [project_module_records]
+ *
+ * **テナント分離**: 全操作で `org_id = ?` を WHERE / INSERT に含める。
+ */
 @Repository
 class ConstructionRepository(
     private val jdbc: JdbcTemplate,
 ) {
 
+    /**
+     * 組織内の工事プロジェクト一覧（モジュールレコード件数付き、作成日降順）。
+     *
+     * @param orgId テナント ID
+     * @return [ConstructionProject] リスト
+     */
     fun listProjects(orgId: String): List<ConstructionProject> {
         return jdbc.query(
+            // construction_projects + レコード件数 COUNT
             """
             SELECT p.id, p.name, p.site_address, p.status, p.manager_name,
                    p.start_date, p.end_date, p.created_at, COUNT(r.id)::int AS record_count
@@ -49,6 +65,12 @@ class ConstructionRepository(
         )
     }
 
+    /**
+     * 新規工事プロジェクトを INSERT する。
+     *
+     * @param status 省略時 PLANNING
+     * @return 作成直後の [ConstructionProject]（record_count = 0）
+     */
     @Transactional
     fun createProject(
         orgId: String,
@@ -88,6 +110,12 @@ class ConstructionRepository(
         )
     }
 
+    /**
+     * SaaS モジュールレコード一覧。moduleCode 必須（null 時は空リスト）。
+     *
+     * @param code モジュールコード（BILLING 等）
+     * @param projectId 省略可。プロジェクトで絞り込み
+     */
     fun listModuleRecords(orgId: String, code: SaasModuleCode?, projectId: String?): List<ProjectModuleRecord> {
         if (code == null) {
             return emptyList()
@@ -130,6 +158,11 @@ class ConstructionRepository(
         )
     }
 
+    /**
+     * モジュールレコードを INSERT する（プロジェクト org_id 照合後）。
+     *
+     * @param status 省略時 OPEN
+     */
     @Transactional
     fun createModuleRecord(
         orgId: String,
@@ -182,6 +215,11 @@ class ConstructionRepository(
         )
     }
 
+    /**
+     * プロジェクト名を org_id スコープで取得する。
+     *
+     * @throws EmptyResultDataAccessException 不存在または org 不一致
+     */
     fun projectName(orgId: String, projectId: String): String {
         return jdbc.queryForObject(
             "SELECT name FROM construction_projects WHERE id = ? AND org_id = ?",
@@ -191,14 +229,17 @@ class ConstructionRepository(
         )!!
     }
 
+    /** Timestamp を ISO 形式文字列に変換。 */
     private fun formatTimestamp(ts: java.sql.Timestamp?): String {
         return if (ts == null) Dates.formatRequired(Dates.now()) else Dates.formatRequired(ts.toInstant())
     }
 
+    /** java.sql.Date を yyyy-MM-dd 文字列に変換。 */
     private fun formatDate(date: Date?): String? {
         return date?.toLocalDate()?.toString()
     }
 
+    /** LocalDate を yyyy-MM-dd 文字列に変換。 */
     private fun formatDate(date: LocalDate?): String? {
         return date?.toString()
     }

@@ -1,3 +1,9 @@
+/**
+ * デモ組織（org_demo）向け初期データシーダ。
+ * アプリケーション起動完了（ApplicationReadyEvent）後に JDBC で
+ * 組織・ユーザー・学習・建設・予算等のサンプル行を UPSERT する。
+ * [DemoCatalog] のカタログ定義と [PasswordEncoder] に依存する。
+ */
 package jp.andpad.api.seed
 
 import jp.andpad.api.demo.DemoCatalog
@@ -9,7 +15,12 @@ import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 
-/** org_demo のデモデータ投入（Go 版 seed.go と同等の最小セット）。 */
+/**
+ * org_demo テナントのデモデータ投入コンポーネント（Go 版 seed.go 相当）。
+ *
+ * @property jdbc 生 SQL 実行用 JdbcTemplate
+ * @property passwordEncoder デモユーザーパスワードの BCrypt ハッシュ化
+ */
 @Component
 class DemoSeeder(
     private val jdbc: JdbcTemplate,
@@ -18,6 +29,10 @@ class DemoSeeder(
 
     private val log = LoggerFactory.getLogger(DemoSeeder::class.java)
 
+    /**
+     * 起動完了時にデモシードを試行する。
+     * 失敗しても API 起動は継続する（本番 DB 未準備時の耐性）。
+     */
     @EventListener(ApplicationReadyEvent::class)
     fun seedDemo() {
         try {
@@ -27,6 +42,10 @@ class DemoSeeder(
         }
     }
 
+    /**
+     * トランザクション内で全デモデータ UPSERT を実行する。
+     * テストから直接呼び出し可能（internal）。
+     */
     @Transactional
     internal fun seedDemoTx() {
         ensureOrganization()
@@ -37,6 +56,9 @@ class DemoSeeder(
         ensureBudgetDemo()
     }
 
+    /**
+     * デモ組織・全 SaaS モジュール有効化・利用カウンタ行を確保する。
+     */
     private fun ensureOrganization() {
         jdbc.update(
             """
@@ -45,6 +67,7 @@ class DemoSeeder(
             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
             """.trimIndent(),
         )
+        // saas_modules マスタの全モジュールを org_demo で有効化
         jdbc.update(
             """
             INSERT INTO org_modules (org_id, module_code, enabled)
@@ -57,6 +80,10 @@ class DemoSeeder(
         )
     }
 
+    /**
+     * デモログインユーザー（user_demo）と OWNER チームメンバー行を確保する。
+     * パスワードは毎回 BCrypt で再ハッシュし、ログイン可能状態を維持する。
+     */
     private fun ensureDemoUser() {
         val hash = passwordEncoder.encode(DEMO_PASSWORD)
         jdbc.update(
@@ -77,6 +104,9 @@ class DemoSeeder(
         )
     }
 
+    /**
+     * [DemoCatalog] から講師・動画・学習パスを DB へ UPSERT する。
+     */
     private fun ensureLearningDemo() {
         for (inst in DemoCatalog.instructors()) {
             jdbc.update(
@@ -136,6 +166,7 @@ class DemoSeeder(
                 path.enrolledCount,
                 path.certificate,
             )
+            // パス内動画の並び順（sort_order）を 1 始まりで設定
             for (i in path.videoIds.indices) {
                 jdbc.update(
                     """
@@ -151,6 +182,9 @@ class DemoSeeder(
         ensureQuizDemo()
     }
 
+    /**
+     * クイズ・選択肢・RAG サンプル文書を投入する（相談 API デモ用）。
+     */
     private fun ensureQuizDemo() {
         jdbc.update(
             """
@@ -181,6 +215,7 @@ class DemoSeeder(
             ON CONFLICT (id) DO NOTHING
             """.trimIndent(),
         )
+        // PostgreSQL text[] 型でタグ付き RAG 文書を 2 件投入
         jdbc.update(
             """
             INSERT INTO rag_documents (id, org_id, title, content, tags)
@@ -196,6 +231,9 @@ class DemoSeeder(
         )
     }
 
+    /**
+     * 建設プロジェクトとモジュール別レコード（進捗・請求・見積）のデモ行を投入する。
+     */
     private fun ensureConstructionDemo() {
         jdbc.update(
             """
@@ -223,6 +261,9 @@ class DemoSeeder(
         )
     }
 
+    /**
+     * 外部 API 連携・BIM モデル等の拡張モジュールデモ行を投入する。
+     */
     private fun ensureExtendedDemo() {
         jdbc.update(
             """
@@ -242,6 +283,9 @@ class DemoSeeder(
         )
     }
 
+    /**
+     * 実行予算・見積・原価エントリのデモ行を投入する（予算ダッシュボード用）。
+     */
     private fun ensureBudgetDemo() {
         jdbc.update(
             """
@@ -287,7 +331,9 @@ class DemoSeeder(
     }
 
     companion object {
+        /** デモログイン用メールアドレス */
         private const val DEMO_EMAIL = "demo@sakura-dental.jp"
+        /** デモログイン用平文パスワード（起動時に BCrypt 化） */
         private const val DEMO_PASSWORD = "demo1234"
     }
 }

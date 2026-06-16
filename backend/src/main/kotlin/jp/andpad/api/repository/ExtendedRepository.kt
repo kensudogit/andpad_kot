@@ -28,16 +28,35 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * 拡張機能（分析・API 連携・BIM）の JDBC リポジトリ。
+ *
+ * **責務**: ANDPAD 風分析ダッシュボード集計、外部 API 連携設定、BIM モデル管理。
+ *
+ * **参照テーブル**: [construction_projects], [project_module_records], [budget_line_items],
+ * [cost_entries], [saas_modules], [api_integrations], [bim_models]
+ *
+ * **テナント分離**: 全クエリで `org_id = ?` を必須とする。
+ */
 @Repository
 class ExtendedRepository(
     private val jdbc: JdbcTemplate,
 ) {
 
+    /**
+     * 指定期間の組織横断分析ダッシュボードを集計する。
+     *
+     * KPI（進行中案件・請求・予算・原価等）、ステータス別件数、モジュール利用 TOP10、
+     * 週次レコード推移、プロジェクト健全性スコア、月次原価を算出。
+     *
+     * @param periodDays 集計日数（≤ 0 時は 30 日）
+     */
     fun andpadAnalytics(orgId: String, periodDays: Int): AndpadAnalyticsDashboard {
         val days = if (periodDays <= 0) 30 else periodDays
         val since = Instant.now().minusSeconds(days.toLong() * 86400L)
         val sinceTs = Timestamp.from(since)
 
+        // 進行中プロジェクト件数
         val active = queryInt(
             """
             SELECT COUNT(*) FROM construction_projects
@@ -46,6 +65,7 @@ class ExtendedRepository(
             orgId,
         )
 
+        // 期間内 BILLING モジュール amount 合計
         val billingTotal = queryDouble(
             """
             SELECT COALESCE(SUM(amount), 0) FROM project_module_records
@@ -194,6 +214,7 @@ class ExtendedRepository(
         )
     }
 
+    /** 組織の API 連携設定一覧（作成日降順）。 */
     fun listApiIntegrations(orgId: String): List<ApiIntegration> {
         return jdbc.query(
             """
@@ -205,6 +226,11 @@ class ExtendedRepository(
         )
     }
 
+    /**
+     * API 連携設定を INSERT（status = ACTIVE）。
+     *
+     * @return 作成直後の [ApiIntegration]
+     */
     @Transactional
     fun createApiIntegration(orgId: String, input: CreateApiIntegrationInput): ApiIntegration {
         val id = Ids.random("api_")
@@ -223,6 +249,11 @@ class ExtendedRepository(
         return getApiIntegration(orgId, id)
     }
 
+    /**
+     * API 連携の last_sync_at を更新し status を ACTIVE に戻す。
+     *
+     * @return 更新後の [ApiIntegration]
+     */
     @Transactional
     fun syncApiIntegration(orgId: String, id: String): ApiIntegration {
         val now = Timestamp.from(Dates.now())
@@ -238,6 +269,9 @@ class ExtendedRepository(
         return getApiIntegration(orgId, id)
     }
 
+    /**
+     * BIM モデル一覧（プロジェクト名 JOIN、projectId 省略可）。
+     */
     fun listBimModels(orgId: String, projectId: String?): List<BimModel> {
         val sql = StringBuilder(
             """
@@ -258,6 +292,11 @@ class ExtendedRepository(
         return jdbc.query(sql.toString(), { rs, _ -> mapBimModel(rs) }, *args.toTypedArray())
     }
 
+    /**
+     * BIM モデル 1 件取得。
+     *
+     * @return 不存在または org 不一致時 null
+     */
     fun getBimModel(orgId: String, id: String): BimModel? {
         return try {
             jdbc.queryForObject(
@@ -277,6 +316,9 @@ class ExtendedRepository(
         }
     }
 
+    /**
+     * BIM モデルを INSERT（format 省略時 IFC、viewerUrl 省略時デモ URL）。
+     */
     @Transactional
     fun createBimModel(orgId: String, input: CreateBimModelInput): BimModel {
         val id = Ids.random("bim_")
@@ -320,6 +362,7 @@ class ExtendedRepository(
         )
     }
 
+    /** org_id + id で API 連携 1 件取得。 */
     private fun getApiIntegration(orgId: String, id: String): ApiIntegration {
         return jdbc.queryForObject(
             """
@@ -332,6 +375,7 @@ class ExtendedRepository(
         )!!
     }
 
+    /** ResultSet から [ApiIntegration] をマッピング。 */
     private fun mapApiIntegration(rs: java.sql.ResultSet): ApiIntegration {
         val lastSync = rs.getTimestamp("last_sync_at")
         return ApiIntegration(
@@ -346,6 +390,7 @@ class ExtendedRepository(
         )
     }
 
+    /** ResultSet から [BimModel] をマッピング。 */
     private fun mapBimModel(rs: java.sql.ResultSet): BimModel {
         val size = if (rs.getObject("file_size_mb") == null) null else rs.getDouble("file_size_mb")
         return BimModel(
@@ -362,6 +407,7 @@ class ExtendedRepository(
         )
     }
 
+    /** 組織全体の月次原価を cost_entries から集計（欠損月 0 埋め）。 */
     private fun orgMonthlyCosts(orgId: String, months: Int): List<MonthlyCostMetric> {
         val since = LocalDate.now().minusMonths((months - 1).toLong()).withDayOfMonth(1)
         val byMonth = HashMap<String, Double>()
@@ -390,16 +436,19 @@ class ExtendedRepository(
         return out
     }
 
+    /** 単一値 Int クエリ（null 時 0）。 */
     private fun queryInt(sql: String, vararg args: Any): Int {
         val value = jdbc.queryForObject(sql, Int::class.java, *args)
         return value ?: 0
     }
 
+    /** 単一値 Double クエリ（null 時 0.0）。 */
     private fun queryDouble(sql: String, vararg args: Any): Double {
         val value = jdbc.queryForObject(sql, Double::class.java, *args)
         return value ?: 0.0
     }
 
+    /** Timestamp を ISO 形式文字列に変換。 */
     private fun formatTimestamp(ts: Timestamp?): String {
         return if (ts == null) Dates.formatRequired(Dates.now()) else Dates.formatRequired(ts.toInstant())
     }

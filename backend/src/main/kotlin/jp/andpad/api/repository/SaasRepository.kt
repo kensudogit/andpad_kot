@@ -22,11 +22,28 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * SaaS 横断機能（モジュール・DX・CRM・勤怠・契約）の JDBC リポジトリ。
+ *
+ * **責務**: org_modules による機能 ON/OFF、DX 施策、CRM、勤怠打刻、休暇申請、電子契約。
+ *
+ * **参照テーブル**: [saas_modules], [org_modules], [dx_initiatives], [dx_tasks],
+ * [crm_contacts], [crm_interactions], [attendance_records], [leave_requests],
+ * [contract_templates], [contracts], [users]
+ *
+ * **テナント分離**: 全テーブル操作で `org_id = ?` を必須とする。
+ * users 参照は org スコープ外（ユーザー名表示用 JOIN のみ）。
+ */
 @Repository
 class SaasRepository(
     private val jdbc: JdbcTemplate,
 ) {
 
+    /**
+     * 組織の SaaS モジュール一覧（マスタ LEFT JOIN org_modules）。
+     *
+     * @return 未有効化モジュールは enabled = false
+     */
     fun listOrgModules(orgId: String): List<SaasModule> {
         return jdbc.query(
             """
@@ -47,6 +64,11 @@ class SaasRepository(
         )
     }
 
+    /**
+     * モジュール有効／無効を UPSERT（ON CONFLICT UPDATE）。
+     *
+     * @return 更新後の [SaasModule]
+     */
     fun setModuleEnabled(orgId: String, code: SaasModuleCode, enabled: Boolean): SaasModule {
         jdbc.update(
             """
@@ -78,6 +100,7 @@ class SaasRepository(
         )!!
     }
 
+    /** DX 施策一覧（タスク件数・完了件数付き）。 */
     fun listDxInitiatives(orgId: String): List<DxInitiative> {
         return jdbc.query(
             """
@@ -109,6 +132,9 @@ class SaasRepository(
         )
     }
 
+    /**
+     * DX 施策を INSERT（status 省略時 PLANNED）。
+     */
     @Transactional
     fun createDxInitiative(
         orgId: String,
@@ -149,6 +175,7 @@ class SaasRepository(
         )
     }
 
+    /** CRM 連絡先一覧（作成日降順）。 */
     fun listCrmContacts(orgId: String): List<CrmContact> {
         return jdbc.query(
             """
@@ -171,6 +198,7 @@ class SaasRepository(
         )
     }
 
+    /** CRM 連絡先 INSERT（stage 省略時 LEAD）。 */
     @Transactional
     fun createCrmContact(
         orgId: String,
@@ -209,6 +237,7 @@ class SaasRepository(
         )
     }
 
+    /** 指定連絡先のインタラクション履歴（発生日降順）。 */
     fun listCrmInteractions(orgId: String, contactId: String): List<CrmInteraction> {
         return jdbc.query(
             """
@@ -230,6 +259,7 @@ class SaasRepository(
         )
     }
 
+    /** CRM インタラクション INSERT（kind 省略時 NOTE）。 */
     @Transactional
     fun createCrmInteraction(orgId: String, contactId: String, kind: String?, summary: String): CrmInteraction {
         val id = Ids.random("cri_")
@@ -245,6 +275,7 @@ class SaasRepository(
         return CrmInteraction(id, contactId, k, summary, Dates.formatRequired(Dates.now()))
     }
 
+    /** 勤怠記録一覧（直近 30 件、ユーザー名 JOIN）。 */
     fun listAttendanceRecords(orgId: String): List<AttendanceRecord> {
         return jdbc.query(
             """
@@ -273,6 +304,7 @@ class SaasRepository(
         )
     }
 
+    /** 出勤打刻 INSERT（clock_in = NOW()）。 */
     @Transactional
     fun clockIn(orgId: String, userId: String, note: String?): AttendanceRecord {
         val id = Ids.random("att_")
@@ -286,8 +318,14 @@ class SaasRepository(
         return findAttendance(orgId, id)
     }
 
+    /**
+     * 退勤打刻（未退勤の最新レコードに clock_out = NOW()）。
+     *
+     * @throws EmptyResultDataAccessException 未退勤レコード不存在
+     */
     @Transactional
     fun clockOut(orgId: String, userId: String): AttendanceRecord {
+        // 未退勤の最新 attendance_records を特定
         val recordId = jdbc.queryForObject(
             """
             SELECT id FROM attendance_records
@@ -306,6 +344,7 @@ class SaasRepository(
         return findAttendance(orgId, recordId)
     }
 
+    /** 休暇申請一覧（作成日降順）。 */
     fun listLeaveRequests(orgId: String): List<LeaveRequest> {
         return jdbc.query(
             """
@@ -332,6 +371,7 @@ class SaasRepository(
         )
     }
 
+    /** 休暇申請 INSERT（初期 status = PENDING）。 */
     @Transactional
     fun createLeaveRequest(
         orgId: String,
@@ -366,12 +406,14 @@ class SaasRepository(
         )
     }
 
+    /** 休暇申請を APPROVED に更新。 */
     @Transactional
     fun approveLeaveRequest(orgId: String, id: String): LeaveRequest {
         jdbc.update("UPDATE leave_requests SET status = 'APPROVED' WHERE org_id = ? AND id = ?", orgId, id)
         return findLeaveRequest(orgId, id)
     }
 
+    /** 契約テンプレート一覧。 */
     fun listContractTemplates(orgId: String): List<ContractTemplate> {
         return jdbc.query(
             "SELECT id, name, body, created_at FROM contract_templates WHERE org_id = ? ORDER BY created_at DESC",
@@ -387,6 +429,7 @@ class SaasRepository(
         )
     }
 
+    /** 契約テンプレート INSERT。 */
     @Transactional
     fun createContractTemplate(orgId: String, name: String, body: String): ContractTemplate {
         val id = Ids.random("ctpl_")
@@ -400,6 +443,7 @@ class SaasRepository(
         return ContractTemplate(id, name, body, Dates.formatRequired(Dates.now()))
     }
 
+    /** 契約書一覧（作成日降順）。 */
     fun listContracts(orgId: String): List<Contract> {
         return jdbc.query(
             """
@@ -428,6 +472,9 @@ class SaasRepository(
         )
     }
 
+    /**
+     * 契約書 INSERT（body 未指定時テンプレート本文をコピー、status = DRAFT）。
+     */
     @Transactional
     fun createContract(
         orgId: String,
@@ -480,6 +527,7 @@ class SaasRepository(
         )
     }
 
+    /** 契約書を SIGNED に更新し signed_at = NOW()。 */
     @Transactional
     fun signContract(orgId: String, id: String): Contract {
         jdbc.update(
@@ -511,6 +559,7 @@ class SaasRepository(
         )!!
     }
 
+    /** org_id + id で勤怠レコード 1 件取得。 */
     private fun findAttendance(orgId: String, id: String): AttendanceRecord {
         return jdbc.queryForObject(
             """
@@ -538,6 +587,7 @@ class SaasRepository(
         )!!
     }
 
+    /** org_id + id で休暇申請 1 件取得。 */
     private fun findLeaveRequest(orgId: String, id: String): LeaveRequest {
         return jdbc.queryForObject(
             """
@@ -564,14 +614,17 @@ class SaasRepository(
         )!!
     }
 
+    /** Timestamp を ISO 形式文字列に変換（null 可）。 */
     private fun formatTimestamp(ts: java.sql.Timestamp?): String? {
         return if (ts == null) null else Dates.formatRequired(ts.toInstant())
     }
 
+    /** java.sql.Date を yyyy-MM-dd 文字列に変換。 */
     private fun formatDate(date: Date?): String? {
         return date?.toLocalDate()?.toString()
     }
 
+    /** LocalDate を yyyy-MM-dd 文字列に変換。 */
     private fun formatDate(date: LocalDate?): String? {
         return date?.toString()
     }

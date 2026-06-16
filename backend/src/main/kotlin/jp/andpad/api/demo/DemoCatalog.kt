@@ -1,10 +1,45 @@
+/**
+ * org_demo 向けデモカタログの静的定義。
+ * 学習モジュール（講師・動画・学習パス）のマスタデータをコード上に保持し、
+ * [jp.andpad.api.seed.DemoSeeder] が JDBC UPSERT の入力として使用する。
+ * Go 版 demo/catalog.go と同等の内容。
+ */
 package jp.andpad.api.demo
 
-/** Go 版 demo/catalog.go と同等の org_demo カタログ定義。 */
+/**
+ * デモ組織用の講師・動画・学習パスカタログ。
+ *
+ * - [CatalogInstructor]: 講師マスタ
+ * - [CatalogVideo]: 動画マスタ（YouTube 連携 URL 生成付き）
+ * - [CatalogPath]: 学習パスと含まれる動画 ID リスト
+ */
 object DemoCatalog {
 
+    /**
+     * 講師カタログ 1 件分。
+     *
+     * @property id 講師 ID
+     * @property name 氏名
+     * @property title 肩書き
+     * @property specialty 専門分野
+     * @property bio 経歴・紹介文
+     */
     data class CatalogInstructor(val id: String, val name: String, val title: String, val specialty: String, val bio: String)
 
+    /**
+     * 動画カタログ 1 件分。
+     *
+     * @property id 動画 ID
+     * @property title タイトル
+     * @property description 説明文
+     * @property category カテゴリコード
+     * @property procedure 手技・プロシージャ名
+     * @property skillLevel 難易度（BEGINNER 等）
+     * @property durationSec 再生時間（秒）
+     * @property youtubeId YouTube 動画 ID
+     * @property instructorId 担当講師 ID
+     * @property featured おすすめ表示フラグ
+     */
     data class CatalogVideo(
         val id: String,
         val title: String,
@@ -17,11 +52,34 @@ object DemoCatalog {
         val instructorId: String,
         val featured: Boolean,
     ) {
+        /**
+         * YouTube サムネイル URL（hqdefault）を生成する。
+         *
+         * @return サムネイル画像 URL
+         */
         fun thumbnailUrl(): String = "https://img.youtube.com/vi/$youtubeId/hqdefault.jpg"
 
+        /**
+         * YouTube 埋め込み iframe 用 URL を生成する。
+         *
+         * @return embed URL
+         */
         fun embedUrl(): String = "https://www.youtube.com/embed/$youtubeId"
     }
 
+    /**
+     * 学習パス（カリキュラム）1 件分。
+     *
+     * @property id パス ID
+     * @property title パス名
+     * @property description 説明
+     * @property category カテゴリコード
+     * @property skillLevel 対象難易度
+     * @property videoIds 含まれる動画 ID（表示順）
+     * @property estimatedMinutes 想定学習時間（分）
+     * @property enrolledCount 受講者数（デモ表示用）
+     * @property certificate 修了証タイトル
+     */
     data class CatalogPath(
         val id: String,
         val title: String,
@@ -34,12 +92,22 @@ object DemoCatalog {
         val certificate: String,
     )
 
+    /**
+     * デモ用講師リストを返す。
+     *
+     * @return 3 名分の [CatalogInstructor]
+     */
     fun instructors(): List<CatalogInstructor> = listOf(
         CatalogInstructor("inst-1", "田中 健一", "歯科医師", "歯内療法", "大学病院歯内科"),
         CatalogInstructor("inst-2", "佐藤 美咲", "歯科衛生士", "歯周治療", "SRP指導"),
         CatalogInstructor("inst-3", "鈴木 大輔", "歯科医師", "口腔外科", "インプラント"),
     )
 
+    /**
+     * デモ用動画リストを返す（YouTube 埋め込み ID 付き）。
+     *
+     * @return 10 本の [CatalogVideo]
+     */
     fun videos(): List<CatalogVideo> = listOf(
         CatalogVideo(
             "v-1", "根管治療 Step1 - 開窩とアクセス",
@@ -93,6 +161,11 @@ object DemoCatalog {
         ),
     )
 
+    /**
+     * デモ用学習パスリストを返す。
+     *
+     * @return 6 コース分の [CatalogPath]
+     */
     fun paths(): List<CatalogPath> = listOf(
         CatalogPath(
             "path-1", "根管治療 基礎コース",

@@ -20,11 +20,23 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * ラーニングエンゲージメント（進捗・ノート・ブックマーク・クイズ）の JDBC リポジトリ。
+ *
+ * **責務**: 視聴進捗・ノート・ブックマーク、クイズ出題／採点、修了証、パス登録。
+ *
+ * **参照テーブル**: [watch_progress], [video_notes], [bookmarks], [quizzes],
+ * [quiz_questions], [quiz_choices], [quiz_attempts], [certificates], [enrollments], [learning_paths]
+ *
+ * **テナント分離**: 全操作で `org_id = ?` を必須とする。
+ * quiz_questions / quiz_choices は quiz_id 経由（quizzes が org スコープ）。
+ */
 @Repository
 class EngagementRepository(
     private val jdbc: JdbcTemplate,
 ) {
 
+    /** 学習者の視聴進捗一覧（更新日降順）。 */
     fun listProgress(orgId: String, learnerId: String): List<WatchProgress> {
         return jdbc.query(
             """
@@ -47,6 +59,7 @@ class EngagementRepository(
         )
     }
 
+    /** 動画ノート一覧（タイムスタンプ昇順）。 */
     fun listNotes(orgId: String, videoId: String, learnerId: String): List<VideoNote> {
         return jdbc.query(
             """
@@ -71,6 +84,7 @@ class EngagementRepository(
         )
     }
 
+    /** 動画ノート INSERT（id 空文字時は新規生成）。 */
     @Transactional
     fun createNote(orgId: String, note: VideoNote): VideoNote {
         val id = if (note.id.isBlank()) Ids.random("note_") else note.id
@@ -91,11 +105,17 @@ class EngagementRepository(
         return VideoNote(id, note.videoId, note.learnerId, note.timestampSec, note.body, Dates.formatRequired(now.toInstant()))
     }
 
+    /**
+     * 動画ノート DELETE。
+     *
+     * @return 1 件以上削除時 true
+     */
     @Transactional
     fun deleteNote(orgId: String, id: String): Boolean {
         return jdbc.update("DELETE FROM video_notes WHERE org_id = ? AND id = ?", orgId, id) > 0
     }
 
+    /** ブックマーク一覧（作成日降順）。 */
     fun listBookmarks(orgId: String, learnerId: String): List<Bookmark> {
         return jdbc.query(
             """
@@ -115,6 +135,11 @@ class EngagementRepository(
         )
     }
 
+    /**
+     * ブックマークトグル（存在時 DELETE → null、不存在時 INSERT）。
+     *
+     * @return 追加時 [Bookmark]、削除時 null
+     */
     @Transactional
     fun toggleBookmark(orgId: String, videoId: String, learnerId: String): Bookmark? {
         return try {
@@ -155,6 +180,7 @@ class EngagementRepository(
         }
     }
 
+    /** クイズ一覧（videoId 省略可、設問・選択肢をネスト取得）。 */
     fun listQuizzes(orgId: String, videoId: String?): List<Quiz> {
         val sql = StringBuilder(
             """
@@ -185,6 +211,7 @@ class EngagementRepository(
         }
     }
 
+    /** クイズ 1 件取得（設問・選択肢付き）。不存在時 null。 */
     fun getQuiz(orgId: String, id: String): Quiz? {
         return try {
             val quiz = jdbc.queryForObject(
@@ -210,6 +237,7 @@ class EngagementRepository(
         }
     }
 
+    /** クイズ受験履歴一覧（完了日降順）。 */
     fun listAttempts(orgId: String, learnerId: String): List<QuizAttempt> {
         return jdbc.query(
             """
@@ -231,6 +259,12 @@ class EngagementRepository(
         )
     }
 
+    /**
+     * クイズ回答を採点し quiz_attempts に INSERT。
+     *
+     * @param answers 各設問の選択肢インデックス（不足分は不正解扱い）
+     * @throws IllegalArgumentException クイズ不存在
+     */
     @Transactional
     fun submitAttempt(orgId: String, quizId: String, learnerId: String, answers: List<Int>?): QuizAttempt {
         val quiz = getQuiz(orgId, quizId)
@@ -262,6 +296,7 @@ class EngagementRepository(
         return QuizAttempt(id, quizId, learnerId, score, passed, Dates.formatRequired(now.toInstant()))
     }
 
+    /** 修了証一覧（発行日降順）。 */
     fun listCertificates(orgId: String, learnerId: String): List<Certificate> {
         return jdbc.query(
             """
@@ -282,6 +317,11 @@ class EngagementRepository(
         )
     }
 
+    /**
+     * 学習パスに登録（enrollments UPSERT + enrolled_count 加算）。
+     *
+     * 重複登録時は ON CONFLICT DO NOTHING（カウントは加算される点に注意）。
+     */
     @Transactional
     fun enrollPath(orgId: String, pathId: String, learnerId: String) {
         jdbc.update(
@@ -303,6 +343,7 @@ class EngagementRepository(
         )
     }
 
+    /** クイズ ID から設問・選択肢を N+1 取得して組み立て。 */
     private fun loadQuestions(quizId: String): List<QuizQuestion> {
         val questions = jdbc.query(
             """
@@ -333,6 +374,7 @@ class EngagementRepository(
         return questions
     }
 
+    /** Timestamp を ISO 形式文字列に変換。 */
     private fun formatTimestamp(ts: Timestamp?): String {
         return if (ts == null) Dates.formatRequired(Dates.now()) else Dates.formatRequired(ts.toInstant())
     }
