@@ -1,5 +1,9 @@
 # ANDPAD Kotlin 版 (`andpad_kot`)
 
+> **Architecture Migration / Kotlin Edition** — Migrates the Java/Spring GraphQL backend to Kotlin while retaining the shared Next.js frontend and adding mobile-oriented responsive behavior.
+>
+> **Series:** [Go baseline](https://github.com/kensudogit/andpad) · [Java](https://github.com/kensudogit/andpad_j) · **Kotlin** · [intra-mart](https://github.com/kensudogit/andpad_mart)
+
 [`andpad_j`](../andpad_j) の Java バックエンドを **Kotlin** に移植したリポジトリです。  
 フロントエンドは Next.js 15 のまま、**スマートフォン向け viewport / レスポンシブ UI** を有効にしています。
 
